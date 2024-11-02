@@ -34,7 +34,7 @@ jobs:
         ARCHITECTURE:
           - x86
         os:
-          - ubuntu-24.04
+          - ubuntu-22.04
 
       fail-fast: false
 
@@ -93,6 +93,15 @@ jobs:
         ccache: 'true'
         mixkey: ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}
         prefix: ${{ github.workspace }}/openwrt
+      
+    - name: 缓存 dl 文件夹
+      uses: actions/cache@v3
+      with:
+        path: openwrt/dl
+        key: ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-dl-${{ github.run_id }}
+        restore-keys: |
+          ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-dl-
+
 
     - name: 加载自定义 feeds
       env:
@@ -119,13 +128,6 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
-    - name: SSH 连接到 Actions
-      uses: P3TERX/ssh2actions@v1.0.0
-      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
-      env:
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-
     - name: 下载软件包
       id: package
       run: |
@@ -140,9 +142,8 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        make -j$(nproc) || make -j1 || make -j1 V=s || make -j1 V=sc
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-        echo "::set-output name=status::success"
 
     - name: 检查磁盘空间
       if: (!cancelled())
@@ -162,7 +163,6 @@ jobs:
         cd openwrt/bin/targets/*/*
         rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "::set-output name=status::success"
 
     - name: 上传固件目录
       uses: actions/upload-artifact@main
@@ -191,7 +191,7 @@ jobs:
         👤 用户名: root
 
         🔒 密码: password " >> release.txt
-        echo "::set-output name=status::success"
+        echo "status=success" >> $GITHUB_OUTPUT
 
     - name: 自动发布固件到 Releases
       uses: softprops/action-gh-release@v1
