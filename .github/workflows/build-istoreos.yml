@@ -16,7 +16,7 @@ on:
 env:
   # 仓库配置
   REPO_URL: https://github.com/istoreos/istoreos
-  REPO_BRANCH: ${{ matrix.REPO_BRANCH }}
+  REPO_BRANCH: ${{ env.REPO_BRANCH }}
   
   # 构建配置
   FEEDS_CONF: feeds.conf
