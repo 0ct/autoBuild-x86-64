@@ -2,74 +2,92 @@ name: Build iStore OS
 
 on:
   repository_dispatch:
+    types: [build]  # 明确指定触发类型
   workflow_dispatch:
-  # 暂时取消每天16点运行一次，待测试稳定后恢复
+    inputs:
+      release:
+        description: '是否发布版本'
+        required: true
+        default: false
+        type: boolean
   # schedule:
-  #  - cron: 0 16 * * *
+  #   - cron: '0 16 * * *'  # 每天16:00 UTC+8运行
 
 env:
+  # 仓库配置
   REPO_URL: https://github.com/istoreos/istoreos
+  REPO_BRANCH: ${{ matrix.REPO_BRANCH }}
+  
+  # 构建配置
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
+  
+  # 上传配置
   UPLOAD_BIN_DIR: true
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
+  
+  # 系统配置
   TZ: Asia/Shanghai
   GITHUB_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    
     strategy:
       matrix:
-        REPO_BRANCH:
-          - istoreos-22.03
-        ARCHITECTURE:
-          - x86
-        os:
-          - ubuntu-22.04
+        include:
+          - REPO_BRANCH: istoreos-22.03
+            ARCHITECTURE: x86
+            os: ubuntu-22.04
       fail-fast: false
 
     steps:
-    - name: 准备完成
-      uses: actions/checkout@main
+    - name: 检出代码
+      uses: actions/checkout@v4
 
-    - name: 检查服务器配置
+    - name: 检查系统配置
       run: |
-        echo "若分配的服务器性能不足，务必及时取消，重新运行！"
-        echo -e "------------------------------- CPU信息 -------------------------------\n"
-        echo "CPU物理数量:$(cat /proc/cpuinfo| grep "physical id"| sort| uniq| wc -l)"
-        echo -e "CPU核心及版本信息: $(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
-        echo -e "------------------------------- 内存信息 -------------------------------\n"
-        echo "已安装内存详细信息: "
-        sudo lshw -short -C memory | grep GiB
-        echo -e "\n"
-        echo -e "------------------------------- 磁盘信息 -------------------------------\n"
-        echo -e "磁盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l) \n"
-        echo "------------------------------- 磁盘详情 -------------------------------\n"
-        df -Th
+        echo "系统配置信息:"
+        echo "━━━━━━━━━━━━━━━━━━━━━"
+        echo "CPU信息:"
+        lscpu | grep "Model name\|Socket(s)\|Core(s) per socket\|Thread(s) per core"
+        echo "━━━━━━━━━━━━━━━━━━━━━"
+        echo "内存信息:"
+        free -h
+        echo "━━━━━━━━━━━━━━━━━━━━━"
+        echo "存储信息:"
+        df -h
 
-    - name: 初始化编译环境
+    - name: 初始化环境
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        echo "------------------------------- 更新并安装依赖 -------------------------------"
+        # 清理系统
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android /opt/ghc
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install $(cat $GITHUB_WORKSPACE/depends/${{ matrix.os }})
-        wget https://bootstrap.pypa.io/pip/3.6/get-pip.py
-        sudo python3 get-pip.py
-        sudo rm -rf get-pip.py
-        sudo pip install pyelftools
-        echo "------------------------------- 清理Docker镜像和软件 -------------------------------"
-        docker rmi `docker images -q`
-        docker image prune -a -f
-        sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* android* || true
+        sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* android*
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
-        echo "------------------------------- 设置工作目录及时区 -------------------------------"
+        
+        # 更新系统
+        sudo -E apt-get -qq update
+        
+        # 安装依赖
+        if [ -f "depends/${{ matrix.os }}" ]; then
+          sudo -E apt-get -qq install $(cat "depends/${{ matrix.os }}")
+        else
+          echo "错误: 缺少依赖文件 depends/${{ matrix.os }}"
+          exit 1
+        fi
+        
+        # 安装Python工具
+        sudo python3 -m pip install -q --upgrade pip
+        sudo pip install -q pyelftools
+        
+        # 配置环境
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
@@ -77,127 +95,164 @@ jobs:
     - name: 克隆源码
       working-directory: /workdir
       run: |
-        df -hT $PWD
-        git clone $REPO_URL -b ${{ matrix.REPO_BRANCH }} openwrt
+        git clone $REPO_URL -b ${{ matrix.REPO_BRANCH }} openwrt --depth=1
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    - name: 缓存构建动作
+    - name: 缓存编译
       uses: klever1988/cachewrtbuild@main
       with:
         ccache: 'true'
-        mixkey: ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}
         prefix: ${{ github.workspace }}/openwrt
-      
-    - name: 缓存 dl 文件夹
+        mixkey: ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-${{ github.run_id }}
+        clean: 'true'
+
+    - name: 缓存依赖
       uses: actions/cache@v3
       with:
         path: openwrt/dl
-        key: ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-dl-${{ github.run_id }}
+        key: dl-${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-${{ hashFiles('feeds.conf') }}-${{ github.run_id }}
         restore-keys: |
-          ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-dl-
-
-    - name: 加载自定义 feeds
-      env:
-        FEEDS_CONF_PATH: ${{ matrix.ARCHITECTURE }}/${{ env.FEEDS_CONF }}
-      run: |
-        [ -e $FEEDS_CONF_PATH ] && mv $FEEDS_CONF_PATH openwrt/$FEEDS_CONF
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
-
-    - name: 更新 feeds
-      run: cd openwrt && ./scripts/feeds update -a
-
-    - name: 安装 feeds
-      run: cd openwrt && ./scripts/feeds install -a
+          dl-${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-${{ hashFiles('feeds.conf') }}-
+          dl-${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-
 
     - name: 加载自定义配置
-      env:
-        CONFIG_FILE_PATH: ${{ matrix.ARCHITECTURE }}/${{ env.CONFIG_FILE }}
       run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE_PATH ] && mv $CONFIG_FILE_PATH openwrt/$CONFIG_FILE
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
+        # 加载feeds
+        [ -e "${{ matrix.ARCHITECTURE }}/${{ env.FEEDS_CONF }}" ] && \
+          mv "${{ matrix.ARCHITECTURE }}/${{ env.FEEDS_CONF }}" "openwrt/${{ env.FEEDS_CONF }}"
+        
+        # 执行自定义脚本
+        [ -e "$DIY_P1_SH" ] && (chmod +x "$DIY_P1_SH"; cd openwrt; "$GITHUB_WORKSPACE/$DIY_P1_SH")
 
-    - name: 下载软件包
+    - name: 更新feeds
+      run: cd openwrt && ./scripts/feeds update -a && ./scripts/feeds install -a
+
+    - name: 加载配置文件
+      run: |
+        # 移动文件
+        [ -d files ] && mv files openwrt/files
+        [ -e "${{ matrix.ARCHITECTURE }}/${{ env.CONFIG_FILE }}" ] && \
+          mv "${{ matrix.ARCHITECTURE }}/${{ env.CONFIG_FILE }}" "openwrt/${{ env.CONFIG_FILE }}"
+        
+        # 执行脚本
+        [ -e "$DIY_P2_SH" ] && (chmod +x "$DIY_P2_SH"; cd openwrt; "$GITHUB_WORKSPACE/$DIY_P2_SH")
+
+    - name: 下载依赖
       id: package
       run: |
         cd openwrt
         make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+        make download -j$(nproc)
+        find dl -size -1024c -delete
 
     - name: 编译固件
       id: compile
       run: |
         cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s || make -j1 V=sc
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+        threads=$(nproc)
+        TIMEOUT=120m
+        
+        function compile() {
+          local cmd="$1"
+          local desc="$2"
+          echo "尝试: $desc"
+          if timeout $TIMEOUT $cmd; then
+            return 0
+          fi
+          return 1
+        }
+        
+        if compile "make -j$threads" "并行编译" || \
+           compile "make -j$(( threads / 2 ))" "半并行编译" || \
+           compile "make -j1 V=s" "单线程编译"; then
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "FILE_DATE=_$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+        else
+          echo "status=failure" >> $GITHUB_OUTPUT
+          exit 1
+        fi
 
-    - name: 检查磁盘空间
-      if: (!cancelled())
-      run: df -hT
-
-    - name: 上传 bin 文件夹
-      uses: actions/upload-artifact@main
+    - name: 上传bin目录
+      uses: actions/upload-artifact@v3
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
       with:
         name: OpenWrt_bin${{ env.FILE_DATE }}
         path: openwrt/bin
+        retention-days: 3
+        if-no-files-found: error
 
-    - name: 整理固件文件
+    - name: 整理固件
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
         cd openwrt/bin/targets/*/*
-        rm -rf packages
+        rm -rf packages feeds.buildinfo *feeds.buildinfo.json version.buildinfo
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 上传固件目录
-      uses: actions/upload-artifact@main
+    - name: 上传固件
+      uses: actions/upload-artifact@v3
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
         name: OpenWrt_firmware${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
+        retention-days: 3
+        if-no-files-found: error
 
-    - name: 生成发布标签
+    - name: 生成发布信息
       id: tag
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        echo "release_tag=$(date +"%Y.%m.%d-%H.%M")" >> $GITHUB_OUTPUT
+        release_tag=$(date +"%Y.%m.%d-%H.%M")
+        echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
+        
         cat > release.txt << EOF
+        📦 固件信息
+        --------------------------------
         💻 架构: ${{ matrix.ARCHITECTURE }}
         📂 源码: ${{ env.REPO_URL }}
         🌳 分支: ${{ matrix.REPO_BRANCH }}
         ⏱️ 编译时间: $(date +"%Y年%m月%d日%H时%M分")
+        
+        🔧 基本设置
+        --------------------------------
         🌐 管理地址: 192.168.99.1
         👤 用户名: root
         🔒 密码: password
+        
+        ⚠️ 请及时修改默认密码以确保安全
         EOF
+        
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 自动发布固件到 Releases
+    - name: 发布固件
       uses: softprops/action-gh-release@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
+        draft: false
+        prerelease: false
+        generate_release_notes: true
 
-    - name: 清理
-      uses: GitRML/delete-workflow-runs@main
+    - name: 清理工作流
+      uses: Mattraks/delete-workflow-runs@v2
       with:
-        retain_days: 1
-        keep_minimum_runs: 1
         token: ${{ env.GITHUB_TOKEN }}
+        repository: ${{ github.repository }}
+        retain_days: 2
+        keep_minimum_runs: 3
+        delete_workflow_pattern: "Build iStore OS"
 
-    - name: 删除自动发布的旧固件
-      uses: dev-drprasad/delete-older-releases@v0.1.0
+    - name: 清理旧版本
+      uses: dev-drprasad/delete-older-releases@v0.2.0
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       with:
         keep_latest: 3
         delete_tags: true
+        delete_tag_pattern: ^\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}$
+      env:
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
