@@ -8,8 +8,9 @@ on:
         description: 'SSH connection to Actions'
         required: false
         default: 'false'
-  schedule:
-   - cron: 0 16 * * *
+  # 暂时取消每天16点运行一次，待测试稳定后恢复
+  # schedule:
+  #  - cron: 0 16 * * *
 
 env:
   REPO_URL: https://github.com/istoreos/istoreos
@@ -33,7 +34,7 @@ jobs:
         ARCHITECTURE:
           - x86
         os:
-          - ubuntu-22.04
+          - ubuntu-24.04
 
       fail-fast: false
 

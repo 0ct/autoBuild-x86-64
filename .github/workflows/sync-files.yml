@@ -3,8 +3,9 @@ name: Sync Files
 on:
   repository_dispatch:
   workflow_dispatch:
-  schedule:
-    - cron: 55 15 * * *
+  # 暂时取消每天15点55分运行一次，待测试稳定后恢复
+  # schedule:
+  #  - cron: 55 15 * * *
 
 jobs:
   sync:
